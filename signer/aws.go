@@ -1,25 +1,26 @@
 package signer
 
 import (
+	"context"
 	"errors"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/kms"
+	"fmt"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 )
 
-type SigningAlgorithm string
-
 const (
-	SigningAlgorithmEcdsaSha256 SigningAlgorithm = "ECDSA_SHA_256"
-	SigningAlgorithmEcdsaSha384 SigningAlgorithm = "ECDSA_SHA_384"
-	SigningAlgorithmEcdsaSha512 SigningAlgorithm = "ECDSA_SHA_512"
+	// Map the three allowed Signing Algorithms here so they're available directly from this package.
+
+	SigningAlgorithmSpecEcdsaSha256 = types.SigningAlgorithmSpecEcdsaSha256
+	SigningAlgorithmSpecEcdsaSha384 = types.SigningAlgorithmSpecEcdsaSha384
+	SigningAlgorithmSpecEcdsaSha512 = types.SigningAlgorithmSpecEcdsaSha512
 )
 
 type AwsKmsIssuerSigner struct {
 	KmsKeyId         string
-	KmsConfig        *aws.Config
+	Client           *kms.Client
 	PublicKeyUrl     string
-	SigningAlgorithm SigningAlgorithm
+	SigningAlgorithm types.SigningAlgorithmSpec
 }
 
 func (s *AwsKmsIssuerSigner) GetKeyUrl() (string, error) {
@@ -27,18 +28,13 @@ func (s *AwsKmsIssuerSigner) GetKeyUrl() (string, error) {
 }
 
 func (s *AwsKmsIssuerSigner) Sign(message []byte) ([]byte, error) {
-	sess, _ := session.NewSession(s.KmsConfig)
-	svc := kms.New(sess)
-
-	//---
 
 	// If the SigningAlgorithm has not been set, we'll attempt to determine it.
 	if len(s.SigningAlgorithm) == 0 {
-		input := &kms.DescribeKeyInput{
-			KeyId: aws.String(s.KmsKeyId),
-		}
 
-		result, err := svc.DescribeKey(input)
+		result, err := s.Client.DescribeKey(context.TODO(), &kms.DescribeKeyInput{
+			KeyId: &s.KmsKeyId,
+		})
 		if err != nil {
 			return []byte{}, err
 		}
@@ -47,19 +43,30 @@ func (s *AwsKmsIssuerSigner) Sign(message []byte) ([]byte, error) {
 			return []byte{}, errors.New("unable to automatically determine correct signing algorithm")
 		}
 
-		s.SigningAlgorithm = SigningAlgorithm(*result.KeyMetadata.SigningAlgorithms[0])
+		s.SigningAlgorithm = result.KeyMetadata.SigningAlgorithms[0]
 	}
 
 	//---
 
-	input := &kms.SignInput{
-		KeyId:            aws.String(s.KmsKeyId),
-		Message:          message,
-		MessageType:      aws.String("RAW"),
-		SigningAlgorithm: aws.String(string(s.SigningAlgorithm)),
+	switch s.SigningAlgorithm {
+	case SigningAlgorithmSpecEcdsaSha256:
+	case SigningAlgorithmSpecEcdsaSha384:
+	case SigningAlgorithmSpecEcdsaSha512:
+	default:
+		return nil, fmt.Errorf(
+			"unsupported signing algorithm. Supported: ECDSA_SHA_256, ECDSA_SHA_384 & ECDSA_SHA_512. Found: %s",
+			s.SigningAlgorithm,
+		)
 	}
 
-	result, err := svc.Sign(input)
+	//---
+
+	result, err := s.Client.Sign(context.TODO(), &kms.SignInput{
+		KeyId:            &s.KmsKeyId,
+		Message:          message,
+		MessageType:      types.MessageTypeRaw,
+		SigningAlgorithm: s.SigningAlgorithm,
+	})
 	if err != nil {
 		return []byte{}, err
 	}
